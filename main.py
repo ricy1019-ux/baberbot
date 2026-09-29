@@ -22,32 +22,34 @@ today_plan_text = "• 載入中，請稍候..."
 local_wishes = []
 wish_counter = 0
 
-# 背景非同步與 Google 試算表通訊
+# 純非同步背景通訊：關鍵加上 allow_redirects=True 穿透 Google 302 轉址
 async def fetch_gas(params):
     try:
-        timeout = aiohttp.ClientTimeout(total=4.0)
+        timeout = aiohttp.ClientTimeout(total=10.0)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(GAS_URL, params=params) as resp:
+            async with session.get(GAS_URL, params=params, allow_redirects=True) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    return await resp.json(content_type=None)
+                else:
+                    print(f"[GAS回應異常] HTTP {resp.status}")
     except Exception as e:
         print(f"[GAS連線提示] {e}")
     return None
 
 async def bg_sync_all():
     global local_bills, today_plan_text, local_wishes, wish_counter
-    # 抓請款
+    # 1. 抓請款
     res_bills = await fetch_gas({"action": "get"})
     if isinstance(res_bills, dict):
-        local_bills = {int(k): v for k, v in res_bills.items()}
+        local_bills = {int(k): v for k, v in res_bills.items() if str(k).isdigit()}
 
-    # 抓行程
+    # 2. 抓行程
     res_plan = await fetch_gas({"action": "get_plan"})
     if isinstance(res_plan, dict) and "plan" in res_plan:
-        if res_plan["plan"].strip():
-            today_plan_text = res_plan["plan"]
+        if str(res_plan["plan"]).strip():
+            today_plan_text = str(res_plan["plan"])
 
-    # 抓願望
+    # 3. 抓願望
     res_wishes = await fetch_gas({"action": "get_wishes"})
     if isinstance(res_wishes, dict) and "wishes" in res_wishes:
         local_wishes = res_wishes["wishes"]
@@ -178,6 +180,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1. 查看今日行程
     elif data == "show_plan":
+        # 點擊時同步最新行程
+        res_plan = await fetch_gas({"action": "get_plan"})
+        if isinstance(res_plan, dict) and "plan" in res_plan and str(res_plan["plan"]).strip():
+            today_plan_text = str(res_plan["plan"])
+
         text = (
             "📍 *【小寶貝今日行程報備】*\n"
             "━━━━━━━━━━━━━━━\n"
@@ -192,15 +199,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 2. 查看許願池清單（每次點擊即時重新拉取試算表）
+    # 2. 查看許願池清單（點擊時即時向試算表拉取最新資料）
     elif data == "show_wishes":
         res_wishes = await fetch_gas({"action": "get_wishes"})
         if isinstance(res_wishes, dict) and "wishes" in res_wishes:
             local_wishes = res_wishes["wishes"]
 
+        # 寬鬆容錯：只要狀態不是「已實現」就算有效願望
         pending_wishes = [
             w for w in local_wishes 
-            if "已實現" not in str(w.get("status", "")).strip()
+            if "已實現" not in str(w.get("status", "")).strip() and str(w.get("item", "")).strip() != ""
         ]
 
         if not pending_wishes:
@@ -220,7 +228,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         for w in pending_wishes:
             icon = "📸 " if w.get("photoId") else "✨ "
-            keyboard.append([InlineKeyboardButton(f"{icon}{w['item']}", callback_data=f"view_wish_{w['id']}")])
+            btn_title = f"{icon}{w['item']}"
+            keyboard.append([InlineKeyboardButton(btn_title, callback_data=f"view_wish_{w['id']}")])
         keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
 
         if query.message.photo:
@@ -303,6 +312,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 5. 請款清單
     elif data == "list_bills":
+        res_bills = await fetch_gas({"action": "get"})
+        if isinstance(res_bills, dict):
+            local_bills = {int(k): v for k, v in res_bills.items() if str(k).isdigit()}
+
         pending_bills = {k: v for k, v in local_bills.items() if v.get("status") == "待審核"}
         if not pending_bills:
             text = "🎉 目前沒有任何待審核的請款單！金主已完全結清。"
@@ -437,16 +450,16 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_wish))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    # 啟動 Web 服務保持活躍
+    # 1. 啟動 Web 服務供 Render 存活偵測
     await start_web_server()
 
-    # 初始化並啟動 Telegram 機器人
+    # 2. 初始化並啟動 Telegram 機器人
     await app.initialize()
     await app.bot.set_my_commands(commands)
     await app.start()
     await app.updater.start_polling()
 
-    # 開機同步試算表歷史紀錄
+    # 3. 開機同步試算表歷史紀錄
     asyncio.create_task(bg_sync_all())
 
     print("小寶貝維運機器人運行中...")
