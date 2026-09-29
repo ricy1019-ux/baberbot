@@ -22,8 +22,7 @@ def load_data():
             print(f"讀取資料錯誤: {e}")
     # 預設初始資料
     default_bills = {
-        1: {"item": "週五豪華晚餐", "amount": 1280, "applicant": "Lisa", "status": "待審核"},
-        2: {"item": "下午茶珍奶全糖", "amount": 75, "applicant": "Lisa", "status": "待審核"}
+
     }
     return default_bills, 2
 
