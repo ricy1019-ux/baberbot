@@ -9,13 +9,13 @@ BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559
 GAS_URL = "https://script.google.com/macros/s/AKfycbxR8e4WUAQABE1wqa_WNpwKi-Bf6GOhlUi0bbCtYsR3GRpP-zFCb1vCoDrjKW6_OAbyvg/exec"
 
-# 本地快取，加速讀取
+# 本機快取，完全避免 Telegram 畫面乾等 Google
 local_cache = {}
 is_cache_loaded = False
 
 def sync_get_bills():
     try:
-        res = requests.get(GAS_URL, params={"action": "get"}, timeout=8).json()
+        res = requests.get(GAS_URL, params={"action": "get"}, timeout=5).json()
         return {int(k): v for k, v in res.items()}
     except Exception as e:
         print(f"讀取試算表失敗: {e}")
@@ -55,8 +55,7 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = args[-1]
     applicant = update.effective_user.first_name
 
-    # 提示使用者正在寫入
-    msg = await update.message.reply_text("⏳ 正在登記中...")
+    msg = await update.message.reply_text("⏳ 正在存入 Google 試算表...")
     loop = asyncio.get_running_loop()
     bill_id = await loop.run_in_executor(None, sync_add_bill, item, amount, applicant)
 
@@ -67,7 +66,7 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "applicant": applicant,
             "status": "待審核"
         }
-        await msg.edit_text(f"✅ 已成功建立並存入請款單！\n單號：#{bill_id} *{item}* (${amount} TWD)", parse_mode="Markdown")
+        await msg.edit_text(f"✅ 已成功建立並永久存入！\n單號：#{bill_id} *{item}* (${amount} TWD)", parse_mode="Markdown")
     else:
         await msg.edit_text("連線試算表逾時，請稍後再試。")
 
@@ -84,9 +83,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     approver = query.from_user.first_name
-    await query.answer()
 
-    if data == "show_perks":
+    # 關鍵：收到點擊的第一微秒立刻回應 Telegram，消除所有轉圈延遲感
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    # 1. 回主選單（純本機變更畫面，0.01 秒切換）
+    if data == "back_main":
+        text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
+        keyboard = [
+            [InlineKeyboardButton("✨ 小寶貝今日活動", callback_data="show_perks")],
+            [InlineKeyboardButton("📋 查看待審請款單", callback_data="list_bills")]
+        ]
+        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
+
+    # 2. 今日活動
+    elif data == "show_perks":
         text = (
             "🎁 *【小寶貝今日活動】*\n"
             "━━━━━━━━━━━━━━━\n"
@@ -98,9 +113,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
 
+    # 3. 待審清單（優先使用記憶體快取，秒開不卡）
     elif data == "list_bills":
-        # 第一次從 Google 讀取，之後優先使用快速快取
         if not is_cache_loaded:
             loop = asyncio.get_running_loop()
             local_cache = await loop.run_in_executor(None, sync_get_bills)
@@ -109,7 +125,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_bills = {k: v for k, v in local_cache.items() if v.get("status") == "待審核"}
         if not pending_bills:
             text = "🎉 目前沒有任何待審核的請款單！金主已完全結清。"
-            keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
+            keyboard = [[InlineKeyboardButton("⬅️️ 回主選單", callback_data="back_main")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -120,12 +136,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"view_{b_id}")])
         keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
 
+    # 4. 單筆檢視
     elif data.startswith("view_"):
         b_id = int(data.split("_")[1])
         b_info = local_cache.get(b_id)
         if not b_info or b_info.get("status") != "待審核":
-            await query.edit_message_text("此請款單已處理完成或不存在！")
+            await query.edit_message_text("此請款單已處理完成或不存在！", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]))
             return
 
         text = (
@@ -145,11 +163,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ 返回清單", callback_data="list_bills")]
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
 
+    # 5. 准予核銷（畫面秒變更，背景默默更新試算表）
     elif data.startswith("approve_"):
         b_id = int(data.split("_")[1])
         if b_id in local_cache:
-            # 立即在本地標註核銷，秒速更新畫面給男友看
             local_cache[b_id]["status"] = "已核銷"
             item = local_cache[b_id]["item"]
             amount = local_cache[b_id]["amount"]
@@ -162,11 +181,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-            # 背景非同步同步至 Google 試算表（不阻塞使用者操作）
+            # 背景非同步回存試算表
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, sync_update_status, b_id, "已核銷")
 
-            # 主動通報你
+            # 通報你
             notify_msg = (
                 f"🔔 *【入帳通報】*\n"
                 f"金主 *{approver}* 剛剛核准了請款！\n"
@@ -179,7 +198,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=notify_msg, parse_mode="Markdown")
             except Exception as e:
                 print(f"通報發送失敗: {e}")
+        return
 
+    # 6. 大膽駁回
     elif data.startswith("reject_"):
         b_id = int(data.split("_")[1])
         if b_id in local_cache:
@@ -194,11 +215,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-            # 背景非同步同步至 Google 試算表
+            # 背景非同步回存試算表
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, sync_update_status, b_id, "已駁回")
 
-            # 主動通報你
+            # 通報你
             notify_msg = (
                 f"🚨 *【駁回警報】*\n"
                 f"金主 *{approver}* 駁回了請款！\n"
@@ -210,14 +231,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=notify_msg, parse_mode="Markdown")
             except Exception as e:
                 print(f"通報發送失敗: {e}")
-
-    elif data == "back_main":
-        text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
-        keyboard = [
-            [InlineKeyboardButton("✨ 小寶貝今日活動", callback_data="show_perks")],
-            [InlineKeyboardButton("📋 查看待審請款單", callback_data="list_bills")]
-        ]
-        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
 
 async def health_check(request):
     return web.Response(text="Bot is running!")
@@ -230,7 +244,7 @@ async def post_init(application: Application):
     ]
     await application.bot.set_my_commands(commands)
 
-    # 機器人啟動時就先在背景把 Google 試算表資料抓下來存好
+    # 啟動時先在背景讀一次試算表快取
     loop = asyncio.get_running_loop()
     local_cache = await loop.run_in_executor(None, sync_get_bills)
     is_cache_loaded = True
