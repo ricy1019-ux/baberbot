@@ -14,7 +14,7 @@ except RuntimeError:
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559
-GAS_URL = "https://script.google.com/macros/s/AKfycbxlkgD0qFHvei_x0li8l9OtEl9-jFoirdf_Q0iwKrOVLokLXdY7-hIDkyE8h6Q0Bumn/exec"
+GAS_URL = "https://script.google.com/macros/s/AKfycbxdhzx6EWM5TYGOMJm0AMJpI6SUwmWyegeAMDQ-nt6JRORbsMV5VsaLSm75LRGo916H/exec"
 
 # 本機記憶體快取
 local_bills = {}
@@ -139,7 +139,7 @@ async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_wishes, wish_counter
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️️ 只有小寶貝本人可以傳照片許願喔！")
+        await update.message.reply_text("⚠️ 只有小寶貝本人可以傳照片許願喔！")
         return
 
     caption = update.message.caption or "想要這個禮物"
@@ -192,7 +192,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 2. 查看許願池清單（點擊即時更新 + 寬鬆狀態比對）
+    # 2. 查看許願池清單（每次點擊即時重新拉取試算表）
     elif data == "show_wishes":
         res_wishes = await fetch_gas({"action": "get_wishes"})
         if isinstance(res_wishes, dict) and "wishes" in res_wishes:
@@ -437,16 +437,16 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_wish))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    # 1. 啟動 Web 服務供 Render / UptimeRobot 存活探測
+    # 啟動 Web 服務保持活躍
     await start_web_server()
 
-    # 2. 初始化並啟動 Telegram 機器人
+    # 初始化並啟動 Telegram 機器人
     await app.initialize()
     await app.bot.set_my_commands(commands)
     await app.start()
     await app.updater.start_polling()
 
-    # 3. 開機同步試算表歷史紀錄
+    # 開機同步試算表歷史紀錄
     asyncio.create_task(bg_sync_all())
 
     print("小寶貝維運機器人運行中...")
