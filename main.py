@@ -1,19 +1,41 @@
 import os
+import json
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
-
-# 你的專屬 Telegram 數字 ID
 ADMIN_CHAT_ID = 7203467559
+DATA_FILE = "bills_data.json"
 
-# 暫存請款資料
-bills_db = {
-    1: {"item": "週五豪華晚餐", "amount": 1280, "applicant": "Lisa", "status": "待審核"},
-    2: {"item": "下午茶珍奶全糖", "amount": 75, "applicant": "Lisa", "status": "待審核"}
-}
-bill_counter = 2
+# 載入資料（如果檔案存在就讀取，不存在就建立預設資料）
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # json 的 key 會是字串，轉回 int
+                bills = {int(k): v for k, v in data.get("bills", {}).items()}
+                counter = data.get("counter", max(bills.keys(), default=0))
+                return bills, counter
+        except Exception as e:
+            print(f"讀取資料錯誤: {e}")
+    # 預設初始資料
+    default_bills = {
+        1: {"item": "週五豪華晚餐", "amount": 1280, "applicant": "Lisa", "status": "待審核"},
+        2: {"item": "下午茶珍奶全糖", "amount": 75, "applicant": "Lisa", "status": "待審核"}
+    }
+    return default_bills, 2
+
+# 儲存資料到檔案
+def save_data():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"bills": bills_db, "counter": bill_counter}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"儲存資料錯誤: {e}")
+
+bills_db, bill_counter = load_data()
 
 async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bill_counter
@@ -33,9 +55,9 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "applicant": applicant,
         "status": "待審核"
     }
+    save_data()  # 立即存檔
     await update.message.reply_text(f"✅ 已成功建立請款項目：*{item}* (${amount} TWD)", parse_mode="Markdown")
 
-# 主選單指令：/menu 與 /start 共通使用
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
     keyboard = [
@@ -108,6 +130,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         b_id = int(data.split("_")[1])
         if b_id in bills_db:
             bills_db[b_id]["status"] = "已核銷"
+            save_data()  # 立即存檔
             item = bills_db[b_id]["item"]
             amount = bills_db[b_id]["amount"]
             text = (
@@ -135,6 +158,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         b_id = int(data.split("_")[1])
         if b_id in bills_db:
             bills_db[b_id]["status"] = "已駁回"
+            save_data()  # 立即存檔
             item = bills_db[b_id]["item"]
             text = (
                 f"⚠️ *請款已被駁回！*\n"
