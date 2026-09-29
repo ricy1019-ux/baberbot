@@ -33,9 +33,9 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ 已成功建立請款項目：*{item}* (${amount} TWD)", parse_mode="Markdown")
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "👑 *【生活維運中心】控制面板*\n請選擇您要執行的操作："
+    text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
     keyboard = [
-        [InlineKeyboardButton("✨ 專屬男友優惠券", callback_data="show_perks")],
+        [InlineKeyboardButton("✨ 小寶貝今日活動", callback_data="show_perks")],
         [InlineKeyboardButton("📋 查看待審請款單", callback_data="list_bills")]
     ]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -48,13 +48,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "show_perks":
         text = (
-            "🎁 *【男友專屬尊榮福利】*\n"
+            "🎁 *【小寶貝今日活動】*\n"
             "━━━━━━━━━━━━━━━\n"
-            "• 兌換券 A：主動擁抱 1 次（無效期）\n"
-            "• 兌換券 B：免洗碗豁免權 1 天\n"
-            "• 兌換券 C：不生氣金牌 10 分鐘\n"
+            "• 下午三點去運動\n"
+        
             "━━━━━━━━━━━━━━━\n"
-            "領取優惠前，請金主先清點應付帳款："
+        
         )
         keyboard = [
             [InlineKeyboardButton("📝 前往審核請款單", callback_data="list_bills")],
@@ -112,7 +111,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"✅ *核銷成功！*\n"
                 f"金主 {approver} 已核准單號 #{b_id}（{item} - ${amount} TWD）。\n"
-                f"24 小時優質伴侶服務已生效！"
+                f"謝謝老闆！"
             )
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -125,15 +124,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"⚠️ *請款已被駁回！*\n"
                 f"審核人 {approver} 駁回了單號 #{b_id}（{item}）。\n"
-                f"即將啟動臭臉模式，請金主自重。"
+                f"請老闆自重。"
             )
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif data == "back_main":
-        text = "👑 *【生活維運中心】控制面板*\n請選擇您要執行的操作："
+        text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
         keyboard = [
-            [InlineKeyboardButton("✨ 專屬男友優惠券", callback_data="show_perks")],
+            [InlineKeyboardButton("✨ 小寶貝今日活動", callback_data="show_perks")],
             [InlineKeyboardButton("📋 查看待審請款單", callback_data="list_bills")]
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
