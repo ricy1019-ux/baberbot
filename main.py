@@ -6,17 +6,23 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotComm
 from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
+# 確保在 Python 3.12+ / 3.14 環境下具備全域 Event Loop
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559
-GAS_URL = "https://script.google.com/macros/s/AKfycbxR8e4WUAQABE1wqa_WNpwKi-Bf6GOhlUi0bbCtYsR3GRpP-zFCb1vCoDrjKW6_OAbyvg/exec"
+GAS_URL = "https://script.google.com/macros/s/AKfycbxlkgD0qFHvei_x0li8l9OtEl9-jFoirdf_Q0iwKrOVLokLXdY7-hIDkyE8h6Q0Bumn/exec"
 
-# 本機記憶體資料庫
+# 本機記憶體快取
 local_bills = {}
 today_plan_text = "• 載入中，請稍候..."
 local_wishes = []
 wish_counter = 0
 
-# 純非同步背景與 Google 試算表通訊
+# 背景非同步與 Google 試算表通訊
 async def fetch_gas(params):
     try:
         timeout = aiohttp.ClientTimeout(total=4.0)
@@ -25,7 +31,7 @@ async def fetch_gas(params):
                 if resp.status == 200:
                     return await resp.json()
     except Exception as e:
-        print(f"[GAS連線] {e}")
+        print(f"[GAS連線提示] {e}")
     return None
 
 async def bg_sync_all():
@@ -35,7 +41,7 @@ async def bg_sync_all():
     if isinstance(res_bills, dict):
         local_bills = {int(k): v for k, v in res_bills.items()}
 
-    # 抓行程（只有真正有資料時才覆蓋）
+    # 抓行程
     res_plan = await fetch_gas({"action": "get_plan"})
     if isinstance(res_plan, dict) and "plan" in res_plan:
         if res_plan["plan"].strip():
@@ -46,7 +52,7 @@ async def bg_sync_all():
     if isinstance(res_wishes, dict) and "wishes" in res_wishes:
         local_wishes = res_wishes["wishes"]
         if local_wishes:
-            wish_counter = max([w["id"] for w in local_wishes], default=0)
+            wish_counter = max([int(w["id"]) for w in local_wishes if str(w["id"]).isdigit()], default=0)
 
 def get_main_menu_markup():
     keyboard = [
@@ -70,7 +76,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
     await update.message.reply_text(text, reply_markup=get_main_menu_markup(), parse_mode="Markdown")
 
-# 1. 請款指令（僅限妳）：/bill 項目 金額
+# 1. 請款指令（僅限本人）：/bill 項目 金額
 async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_bills
     if update.effective_user.id != ADMIN_CHAT_ID:
@@ -96,11 +102,11 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ 已建立請款單！\n單號：#{new_id} *{item}* (${amount} TWD)", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "add", "item": item, "amount": amount, "applicant": applicant}))
 
-# 2. 行程報備指令（僅限妳）：/plan 內容
+# 2. 行程報備指令（僅限本人）：/plan 內容
 async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global today_plan_text
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️️ 只有小寶貝本人可以更新行程報備喔！")
+        await update.message.reply_text("⚠️ 只有小寶貝本人可以更新行程報備喔！")
         return
 
     if not context.args:
@@ -112,11 +118,11 @@ async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📍 *今日行程報備已更新並永久存檔！*\n━━━━━━━━━━━━━━━\n{today_plan_text}", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "set_plan", "plan": today_plan_text}))
 
-# 3. 文字許願（僅限妳）：/wish 內容
+# 3. 文字許願指令（僅限本人）：/wish 內容
 async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_wishes, wish_counter
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
+        await update.message.reply_text("⚠️️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
         return
 
     if not context.args:
@@ -129,11 +135,11 @@ async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✨ 願望已成功丟進許願池：\n「*{item}*」\n金主已收到風聲！", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "add_wish", "item": item, "photo_id": ""}))
 
-# 4. 照片許願（僅限妳）：傳送照片 + 留言
+# 4. 照片許願指令（僅限本人）：傳照片 + 留言
 async def handle_photo_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_wishes, wish_counter
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 只有小寶貝本人可以傳照片許願喔！")
+        await update.message.reply_text("⚠️️ 只有小寶貝本人可以傳照片許願喔！")
         return
 
     caption = update.message.caption or "想要這個禮物"
@@ -145,7 +151,7 @@ async def handle_photo_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 *照片願望已存入許願池！*\n• 願望項目：*{item}*", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "add_wish", "item": item, "photo_id": photo_id}))
 
-# 核心按鈕回調
+# 按鈕回調處理
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_bills, today_plan_text, local_wishes
     query = update.callback_query
@@ -186,9 +192,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 2. 查看許願池清單
+    # 2. 查看許願池清單（點擊即時更新 + 寬鬆狀態比對）
     elif data == "show_wishes":
-        pending_wishes = [w for w in local_wishes if w.get("status") == "待實現"]
+        res_wishes = await fetch_gas({"action": "get_wishes"})
+        if isinstance(res_wishes, dict) and "wishes" in res_wishes:
+            local_wishes = res_wishes["wishes"]
+
+        pending_wishes = [
+            w for w in local_wishes 
+            if "已實現" not in str(w.get("status", "")).strip()
+        ]
+
         if not pending_wishes:
             text = "✨ 目前許願池空空如也，或是金主已經把所有願望全部實現了！"
             keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
@@ -222,8 +236,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 3. 檢視願望詳情
     elif data.startswith("view_wish_"):
         w_id = int(data.split("_")[2])
-        w = next((x for x in local_wishes if x["id"] == w_id), None)
-        if not w or w.get("status") != "待實現":
+        w = next((x for x in local_wishes if int(x["id"]) == w_id), None)
+        if not w or "已實現" in str(w.get("status", "")):
             await safe_edit_text(query, "此願望已實現或不存在！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 回許願池", callback_data="show_wishes")]]))
             return
 
@@ -252,8 +266,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 4. 認領/實現願望
     elif data.startswith("fulfill_"):
         w_id = int(data.split("_")[1])
-        target_wish = next((w for w in local_wishes if w["id"] == w_id), None)
-        if target_wish and target_wish.get("status") == "待實現":
+        target_wish = next((w for w in local_wishes if int(w["id"]) == w_id), None)
+        if target_wish and "已實現" not in str(target_wish.get("status", "")):
             target_wish["status"] = "已實現"
             item = target_wish["item"]
 
@@ -397,15 +411,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def health_check(request):
     return web.Response(text="OK")
 
-async def post_init(application: Application):
-    commands = [
-        BotCommand("menu", "喚出主選單"),
-        BotCommand("wish", "新增願望 (例: /wish 想要新耳機)"),
-        BotCommand("plan", "更新行程 (例: /plan 15:00 健身房)"),
-        BotCommand("bill", "新增請款 (例: /bill 火鍋 800)"),
-    ]
-    await application.bot.set_my_commands(commands)
-
+async def start_web_server():
     server = web.Application()
     server.router.add_get("/", health_check)
     runner = web.AppRunner(server)
@@ -414,11 +420,15 @@ async def post_init(application: Application):
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # 開機後在背景將最新資料拉下來，不阻擋 Telegram 啟動
-    asyncio.create_task(bg_sync_all())
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+async def run_bot():
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    commands = [
+        BotCommand("menu", "喚出主選單"),
+        BotCommand("wish", "新增願望 (例: /wish 想要新耳機)"),
+        BotCommand("plan", "更新行程 (例: /plan 15:00 健身房)"),
+        BotCommand("bill", "新增請款 (例: /bill 火鍋 800)"),
+    ]
     app.add_handler(CommandHandler("start", menu))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("wish", add_wish))
@@ -427,8 +437,25 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_wish))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
+    # 1. 啟動 Web 服務供 Render / UptimeRobot 存活探測
+    await start_web_server()
+
+    # 2. 初始化並啟動 Telegram 機器人
+    await app.initialize()
+    await app.bot.set_my_commands(commands)
+    await app.start()
+    await app.updater.start_polling()
+
+    # 3. 開機同步試算表歷史紀錄
+    asyncio.create_task(bg_sync_all())
+
     print("小寶貝維運機器人運行中...")
-    app.run_polling()
+
+    stop_event = asyncio.Event()
+    await stop_event.wait()
+
+def main():
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
     main()
