@@ -1,43 +1,47 @@
 import os
-import json
+import requests
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559
-DATA_FILE = "bills_data.json"
 
-# 載入資料（如果檔案存在就讀取，不存在就建立預設資料）
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # json 的 key 會是字串，轉回 int
-                bills = {int(k): v for k, v in data.get("bills", {}).items()}
-                counter = data.get("counter", max(bills.keys(), default=0))
-                return bills, counter
-        except Exception as e:
-            print(f"讀取資料錯誤: {e}")
-    # 預設初始資料
-    default_bills = {
+# 已填入你剛剛產生的 Google Apps Script 網址
+GAS_URL = "https://script.google.com/macros/s/AKfycbxR8e4WUAQABE1wqa_WNpwKi-Bf6GOhlUi0bbCtYsR3GRpP-zFCb1vCoDrjKW6_OAbyvg/exec"
 
-    }
-    return default_bills, 2
-
-# 儲存資料到檔案
-def save_data():
+def get_bills_from_sheets():
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({"bills": bills_db, "counter": bill_counter}, f, ensure_ascii=False, indent=2)
+        res = requests.get(GAS_URL, params={"action": "get"}, timeout=10).json()
+        return {int(k): v for k, v in res.items()}
     except Exception as e:
-        print(f"儲存資料錯誤: {e}")
+        print(f"讀取試算表失敗: {e}")
+        return {}
 
-bills_db, bill_counter = load_data()
+def add_bill_to_sheets(item, amount, applicant):
+    try:
+        res = requests.get(GAS_URL, params={
+            "action": "add",
+            "item": item,
+            "amount": amount,
+            "applicant": applicant
+        }, timeout=10).json()
+        return res.get("id")
+    except Exception as e:
+        print(f"寫入試算表失敗: {e}")
+        return None
+
+def update_bill_status(bill_id, status):
+    try:
+        requests.get(GAS_URL, params={
+            "action": "update",
+            "id": bill_id,
+            "status": status
+        }, timeout=10)
+    except Exception as e:
+        print(f"更新狀態失敗: {e}")
 
 async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bill_counter
     args = context.args
     if len(args) < 2:
         await update.message.reply_text("格式錯誤！請輸入：`/bill 項目 金額`\n例如：`/bill 火鍋 800`", parse_mode="Markdown")
@@ -47,15 +51,12 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = args[-1]
     applicant = update.effective_user.first_name
 
-    bill_counter += 1
-    bills_db[bill_counter] = {
-        "item": item,
-        "amount": amount,
-        "applicant": applicant,
-        "status": "待審核"
-    }
-    save_data()  # 立即存檔
-    await update.message.reply_text(f"✅ 已成功建立請款項目：*{item}* (${amount} TWD)", parse_mode="Markdown")
+    # 存入 Google 試算表
+    bill_id = add_bill_to_sheets(item, amount, applicant)
+    if bill_id:
+        await update.message.reply_text(f"✅ 已成功建立並永久存入請款單！\n單號：#{bill_id} *{item}* (${amount} TWD)", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("連線試算表失敗，請稍後再試。")
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
@@ -85,7 +86,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif data == "list_bills":
-        pending_bills = {k: v for k, v in bills_db.items() if v["status"] == "待審核"}
+        bills_db = get_bills_from_sheets()
+        pending_bills = {k: v for k, v in bills_db.items() if v.get("status") == "待審核"}
         if not pending_bills:
             text = "🎉 目前沒有任何待審核的請款單！金主已完全結清。"
             keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
@@ -102,8 +104,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("view_"):
         b_id = int(data.split("_")[1])
+        bills_db = get_bills_from_sheets()
         b_info = bills_db.get(b_id)
-        if not b_info or b_info["status"] != "待審核":
+        if not b_info or b_info.get("status") != "待審核":
             await query.edit_message_text("此請款單已處理完成或不存在！")
             return
 
@@ -127,9 +130,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("approve_"):
         b_id = int(data.split("_")[1])
+        bills_db = get_bills_from_sheets()
         if b_id in bills_db:
-            bills_db[b_id]["status"] = "已核銷"
-            save_data()  # 立即存檔
+            update_bill_status(b_id, "已核銷")
             item = bills_db[b_id]["item"]
             amount = bills_db[b_id]["amount"]
             text = (
@@ -155,9 +158,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("reject_"):
         b_id = int(data.split("_")[1])
+        bills_db = get_bills_from_sheets()
         if b_id in bills_db:
-            bills_db[b_id]["status"] = "已駁回"
-            save_data()  # 立即存檔
+            update_bill_status(b_id, "已駁回")
             item = bills_db[b_id]["item"]
             text = (
                 f"⚠️ *請款已被駁回！*\n"
@@ -207,7 +210,6 @@ async def post_init(application: Application):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    
     app.add_handler(CommandHandler("start", menu))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("bill", add_bill))
