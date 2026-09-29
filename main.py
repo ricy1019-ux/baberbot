@@ -1,16 +1,17 @@
+import os
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-# 暫存請款資料（重啟後重置，適合日常輕量互動）
+# 暫存請款資料
 bills_db = {
     1: {"item": "週五豪華晚餐", "amount": 1280, "applicant": "Lisa", "status": "待審核"},
     2: {"item": "下午茶珍奶全糖", "amount": 75, "applicant": "Lisa", "status": "待審核"}
 }
 bill_counter = 2
 
-# 新增請款指令：/bill 項目 金額
 async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bill_counter
     args = context.args
@@ -31,7 +32,6 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await update.message.reply_text(f"✅ 已成功建立請款項目：*{item}* (${amount} TWD)", parse_mode="Markdown")
 
-# 主選單指令：/menu
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👑 *【生活維運中心】控制面板*\n請選擇您要執行的操作："
     keyboard = [
@@ -40,14 +40,12 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# 處理所有按鈕互動
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     approver = query.from_user.first_name
     await query.answer()
 
-    # 1. 點擊「專屬男友優惠」
     if data == "show_perks":
         text = (
             "🎁 *【男友專屬尊榮福利】*\n"
@@ -64,7 +62,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # 2. 列出所有未結請款單
     elif data == "list_bills":
         pending_bills = {k: v for k, v in bills_db.items() if v["status"] == "待審核"}
         if not pending_bills:
@@ -81,7 +78,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # 3. 點選特定請款項目，跳出批核選項
     elif data.startswith("view_"):
         b_id = int(data.split("_")[1])
         b_info = bills_db.get(b_id)
@@ -107,7 +103,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # 4. 批核：核銷
     elif data.startswith("approve_"):
         b_id = int(data.split("_")[1])
         if b_id in bills_db:
@@ -117,12 +112,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"✅ *核銷成功！*\n"
                 f"金主 {approver} 已核准單號 #{b_id}（{item} - ${amount} TWD）。\n"
-                f"謝謝老闆"
+                f"24 小時優質伴侶服務已生效！"
             )
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # 5. 批核：駁回
     elif data.startswith("reject_"):
         b_id = int(data.split("_")[1])
         if b_id in bills_db:
@@ -131,12 +125,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = (
                 f"⚠️ *請款已被駁回！*\n"
                 f"審核人 {approver} 駁回了單號 #{b_id}（{item}）。\n"
-                f"問號❓️"
+                f"即將啟動臭臉模式，請金主自重。"
             )
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # 6. 回到主選單
     elif data == "back_main":
         text = "👑 *【生活維運中心】控制面板*\n請選擇您要執行的操作："
         keyboard = [
@@ -145,8 +138,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+# 提供給 Render 的心跳首頁
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
+async def post_init(application: Application):
+    server = web.Application()
+    server.router.add_get("/", health_check)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("bill", add_bill))
     app.add_handler(CallbackQueryHandler(handle_callback))
