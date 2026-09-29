@@ -5,6 +5,9 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 
+# 填入你的 Telegram 數字 ID（向 @userinfobot 查詢到的純數字）
+ADMIN_CHAT_ID =  7203467559
+
 # 暫存請款資料
 bills_db = {
     1: {"item": "週五豪華晚餐", "amount": 1280, "applicant": "Lisa", "status": "待審核"},
@@ -51,9 +54,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎁 *【小寶貝今日活動】*\n"
             "━━━━━━━━━━━━━━━\n"
             "• 下午三點去運動\n"
-        
             "━━━━━━━━━━━━━━━\n"
-        
         )
         keyboard = [
             [InlineKeyboardButton("📝 前往審核請款單", callback_data="list_bills")],
@@ -116,6 +117,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+            # 主動通報你
+            notify_msg = (
+                f"🔔 *【入帳通報】*\n"
+                f"金主 *{approver}* 剛剛核准了請款！\n"
+                f"• 單號：#{b_id}\n"
+                f"• 項目：{item}\n"
+                f"• 金額：${amount} TWD\n"
+                f"請記得查核入帳款項～"
+            )
+            try:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=notify_msg, parse_mode="Markdown")
+            except Exception as e:
+                print(f"通報發送失敗: {e}")
+
     elif data.startswith("reject_"):
         b_id = int(data.split("_")[1])
         if b_id in bills_db:
@@ -128,6 +143,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+            # 主動通報你
+            notify_msg = (
+                f"🚨 *【駁回警報】*\n"
+                f"金主 *{approver}* 駁回了請款！\n"
+                f"• 單號：#{b_id}\n"
+                f"• 項目：{item}\n"
+                f"請準備啟動防護機制。"
+            )
+            try:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=notify_msg, parse_mode="Markdown")
+            except Exception as e:
+                print(f"通報發送失敗: {e}")
 
     elif data == "back_main":
         text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
