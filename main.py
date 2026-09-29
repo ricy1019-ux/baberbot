@@ -1,12 +1,12 @@
 import os
 from aiohttp import web
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 
-# 填入你的 Telegram 數字 ID（向 @userinfobot 查詢到的純數字）
-ADMIN_CHAT_ID =  7203467559
+# 你的專屬 Telegram 數字 ID
+ADMIN_CHAT_ID = 7203467559
 
 # 暫存請款資料
 bills_db = {
@@ -35,6 +35,7 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await update.message.reply_text(f"✅ 已成功建立請款項目：*{item}* (${amount} TWD)", parse_mode="Markdown")
 
+# 主選單指令：/menu 與 /start 共通使用
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
     keyboard = [
@@ -117,7 +118,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-            # 主動通報你
             notify_msg = (
                 f"🔔 *【入帳通報】*\n"
                 f"金主 *{approver}* 剛剛核准了請款！\n"
@@ -144,7 +144,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-            # 主動通報你
             notify_msg = (
                 f"🚨 *【駁回警報】*\n"
                 f"金主 *{approver}* 駁回了請款！\n"
@@ -165,11 +164,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# 提供給 Render 的心跳首頁
 async def health_check(request):
     return web.Response(text="Bot is running!")
 
 async def post_init(application: Application):
+    commands = [
+        BotCommand("menu", "喚出主選單"),
+        BotCommand("bill", "新增請款 (例: /bill 火鍋 800)"),
+    ]
+    await application.bot.set_my_commands(commands)
+
     server = web.Application()
     server.router.add_get("/", health_check)
     runner = web.AppRunner(server)
@@ -180,6 +184,8 @@ async def post_init(application: Application):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    
+    app.add_handler(CommandHandler("start", menu))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("bill", add_bill))
     app.add_handler(CallbackQueryHandler(handle_callback))
