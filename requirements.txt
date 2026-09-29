@@ -1,3 +1,2 @@
-Plaintext
 python-telegram-bot
 aiohttp
