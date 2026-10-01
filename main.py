@@ -15,7 +15,7 @@ except RuntimeError:
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559  # 專屬 ID
-GAS_URL = "https://script.google.com/macros/s/AKfycbxdhzx6EWM5TYGOMJm0AMJpI6SUwmWyegeAMDQ-nt6JRORbsMV5VsaLSm75LRGo916H/exec"
+GAS_URL = "https://script.google.com/macros/s/AKfycbx5NjemT77BglFbGJUWwBEeEDc69x9JEe39Ym0l6aRtspLkrciZ19-qnsTTs-L2Onv2/exec"
 
 # 本機記憶體快取
 local_bills = {}
@@ -260,7 +260,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not local_moods:
             text = "🌸 *【小寶貝今日心情相簿】*\n今天還沒有發布日常動態喔！\n小寶貝只要直接傳送照片就會自動收錄進來～"
-            keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
+            keyboard = [[InlineKeyboardButton("⬅️️ 回主選單", callback_data="back_main")]]
             if query.message.photo:
                 try:
                     await query.message.delete()
@@ -338,14 +338,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # 找出該筆心情文字作為備用比對依據
         target_m = next((x for x in local_moods if str(x.get("id", "")).strip() == m_id_str), None)
         target_text = target_m.get("text", "") if target_m else ""
 
         # 2. 本地快取立即移除
         local_moods = [m for m in local_moods if str(m.get("id", "")).strip() != m_id_str]
 
-        # 3. 同步送出給 GAS 並等待回應（同時附帶 ID 與 文字）
+        # 3. 同步送出給 GAS 並等待回應
         res = await fetch_gas({"action": "delete_mood", "id": m_id_str, "text": target_text})
         print(f"[刪除除錯回應] 刪除ID {m_id_str}, 文字 {target_text}, 結果: {res}")
 
