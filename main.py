@@ -81,7 +81,6 @@ async def safe_edit_text(query, text, reply_markup=None):
         if "Message is not modified" in str(e):
             pass
         elif "There is no text in the message to edit" in str(e):
-            # 若為照片訊息，安全刪除原照片並重新發送文字
             try:
                 await query.message.delete()
             except Exception:
@@ -163,7 +162,7 @@ async def add_mood(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = " ".join(context.args) if context.args else "今天也是元氣滿滿的一天～✨"
     time_str = datetime.now().strftime("%H:%M")
-    m_id = len(local_moods) + 1
+    m_id = str(len(local_moods) + 1)
     local_moods.append({"id": m_id, "text": text, "photoId": "", "time": time_str})
     await update.message.reply_text(f"📝 *今日心情已記錄！*\n「{text}」", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "add_mood", "text": text, "photo_id": ""}))
@@ -222,7 +221,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         mood_text = caption if caption else "紀錄美好的一刻 📸"
         time_str = datetime.now().strftime("%H:%M")
-        m_id = len(local_moods) + 1
+        m_id = str(len(local_moods) + 1)
         local_moods.append({"id": m_id, "text": mood_text, "photoId": photo_id, "time": time_str})
         await update.message.reply_text(f"🌸 *已收錄進今日心情相簿！*\n「{mood_text}」", parse_mode="Markdown")
         asyncio.create_task(fetch_gas({"action": "add_mood", "text": mood_text, "photo_id": photo_id}))
@@ -276,7 +275,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         for m in local_moods:
             icon = "📷 " if m.get("photoId") else "💭 "
-            title = f"{icon}{m['text'][:15]}"
+            title = f"{icon}{str(m.get('text', ''))[:15]}"
             keyboard.append([InlineKeyboardButton(title, callback_data=f"view_mood_{m['id']}")])
         keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
 
@@ -292,16 +291,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 查看單筆心情（含本人專屬刪除鈕）
     elif data.startswith("view_mood_"):
-        m_id = int(data.split("_")[2])
-        m = next((x for x in local_moods if int(x["id"]) == m_id), None)
+        m_id_str = str(data.split("_")[2]).strip()
+        m = next((x for x in local_moods if str(x.get("id", "")).strip() == m_id_str), None)
         if not m:
             await safe_edit_text(query, "找不到該心情紀錄！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回相簿", callback_data="show_moods")]]))
             return
 
         caption = f"🌸 *今日心情日常*\n━━━━━━━━━━━━━━━\n「{m['text']}」\n━━━━━━━━━━━━━━━\n時間：{m.get('time', '剛剛')}"
         keyboard = []
-        if user_id == ADMIN_CHAT_ID:
-            keyboard.append([InlineKeyboardButton("🗑️️ 【小寶貝專屬】刪除此動態", callback_data=f"del_mood_{m_id}")])
+        if int(user_id) == int(ADMIN_CHAT_ID):
+            keyboard.append([InlineKeyboardButton("🗑️ 【小寶貝專屬】刪除此動態", callback_data=f"del_mood_{m_id_str}")])
             
         keyboard.append([InlineKeyboardButton("📸 看其他動態", callback_data="show_moods")])
         keyboard.append([InlineKeyboardButton("🏠 回主選單", callback_data="back_main")])
@@ -322,21 +321,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, caption, InlineKeyboardMarkup(keyboard))
         return
 
-    # 執行刪除心情（完整防護版）
+    # 執行刪除心情（除錯強化與同步等待 GAS 確認版）
     elif data.startswith("del_mood_"):
-        m_id = int(data.split("_")[2])
-        if user_id != ADMIN_CHAT_ID:
+        m_id_str = str(data.split("_")[2]).strip()
+        
+        # 1. 權限檢查：若身分不符合彈窗提醒
+        if int(user_id) != int(ADMIN_CHAT_ID):
             try:
-                await query.answer("⚠️ 只有小寶貝本人可以刪除自己的動態喔！", show_alert=True)
+                await query.answer(f"⚠️ 這是小寶貝專屬功能！\n你的ID: {user_id}\n後台ID: {ADMIN_CHAT_ID}", show_alert=True)
             except Exception:
                 pass
             return
 
-        # 1. 本地記憶體立即移除
-        local_moods = [m for m in local_moods if int(m["id"]) != m_id]
-        
-        # 2. 異步通知 GAS 試算表刪除對應 row
-        asyncio.create_task(fetch_gas({"action": "delete_mood", "id": m_id}))
+        try:
+            await query.answer("正在刪除動態，請稍候...", show_alert=False)
+        except Exception:
+            pass
+
+        # 2. 本地快取立即移除
+        local_moods = [m for m in local_moods if str(m.get("id", "")).strip() != m_id_str]
+
+        # 3. 同步發送給 GAS 並等待回應確認
+        res = await fetch_gas({"action": "delete_mood", "id": m_id_str})
+        print(f"[刪除除錯回應] 刪除ID {m_id_str} 結果: {res}")
 
         text = "🗑️ *動態已成功刪除！*"
         keyboard = [
@@ -344,7 +351,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 回主選單", callback_data="back_main")]
         ]
         
-        # 3. 處理畫面更新：照片訊息安全移除後重送文字確認卡片
+        # 4. 畫面安全更新（防範照片訊息例外）
         try:
             if query.message.photo:
                 await query.message.delete()
@@ -617,7 +624,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btn_text = f"#{b_id} {b_info['item']} (${int(amt)}) [{status_tag}]"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"receipt_detail_{b_id}")])
 
-        keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
+        keyboard.append([InlineKeyboardButton("⬅️️ 回主選單", callback_data="back_main")])
 
         if not approved_bills:
             text = (
@@ -644,7 +651,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         b_id = int(data.split("_")[2])
         b_info = local_bills.get(b_id)
         if not b_info:
-            await safe_edit_text(query, "查無此單號！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回總表", callback_data="show_approved_summary")]]))
+            await safe_edit_text(query, "查無此單號！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️️ 返回總表", callback_data="show_approved_summary")]]))
             return
 
         is_settled = "已結清" in b_info.get("status", "") or "已核銷" in b_info.get("status", "")
@@ -671,7 +678,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("confirm_received_"):
         b_id = int(data.split("_")[2])
 
-        if user_id != ADMIN_CHAT_ID:
+        if int(user_id) != int(ADMIN_CHAT_ID):
             try:
                 await query.answer("⚠️ 這是小寶貝專屬的確認入帳按鈕，金主不能代按喔！🥰", show_alert=True)
             except Exception:
