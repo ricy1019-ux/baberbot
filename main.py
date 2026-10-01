@@ -14,7 +14,7 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
-ADMIN_CHAT_ID = 7203467559  # 妳的專屬 ID
+ADMIN_CHAT_ID = 7203467559  # 專屬 ID
 GAS_URL = "https://script.google.com/macros/s/AKfycbxdhzx6EWM5TYGOMJm0AMJpI6SUwmWyegeAMDQ-nt6JRORbsMV5VsaLSm75LRGo916H/exec"
 
 # 本機記憶體快取
@@ -80,6 +80,13 @@ async def safe_edit_text(query, text, reply_markup=None):
     except BadRequest as e:
         if "Message is not modified" in str(e):
             pass
+        elif "There is no text in the message to edit" in str(e):
+            # 若為照片訊息，安全刪除原照片並重新發送文字
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await query.message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
         else:
             raise e
 
@@ -177,14 +184,12 @@ async def add_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     feedback_text = " ".join(context.args)
     await update.message.reply_text("💌 *您的意見已直接送達小寶貝耳邊！*\n謝謝金主的用心反饋～💖", parse_mode="Markdown")
 
-    # 1. 存入 Google 試算表
     asyncio.create_task(fetch_gas({
         "action": "add_feedback",
         "user": user_name,
         "feedback": feedback_text
     }))
 
-    # 2. 即刻推播私訊通知小寶貝本人！
     notify_text = (
         f"📢 *【金主意見即時來信！】*\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -296,7 +301,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = f"🌸 *今日心情日常*\n━━━━━━━━━━━━━━━\n「{m['text']}」\n━━━━━━━━━━━━━━━\n時間：{m.get('time', '剛剛')}"
         keyboard = []
         if user_id == ADMIN_CHAT_ID:
-            keyboard.append([InlineKeyboardButton("🗑️ 【小寶貝專屬】刪除此動態", callback_data=f"del_mood_{m_id}")])
+            keyboard.append([InlineKeyboardButton("🗑️️ 【小寶貝專屬】刪除此動態", callback_data=f"del_mood_{m_id}")])
             
         keyboard.append([InlineKeyboardButton("📸 看其他動態", callback_data="show_moods")])
         keyboard.append([InlineKeyboardButton("🏠 回主選單", callback_data="back_main")])
@@ -317,7 +322,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, caption, InlineKeyboardMarkup(keyboard))
         return
 
-    # 執行刪除心情
+    # 執行刪除心情（完整防護版）
     elif data.startswith("del_mood_"):
         m_id = int(data.split("_")[2])
         if user_id != ADMIN_CHAT_ID:
@@ -327,7 +332,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
+        # 1. 本地記憶體立即移除
         local_moods = [m for m in local_moods if int(m["id"]) != m_id]
+        
+        # 2. 異步通知 GAS 試算表刪除對應 row
         asyncio.create_task(fetch_gas({"action": "delete_mood", "id": m_id}))
 
         text = "🗑️ *動態已成功刪除！*"
@@ -335,14 +343,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📸 返回相簿", callback_data="show_moods")],
             [InlineKeyboardButton("🏠 回主選單", callback_data="back_main")]
         ]
-        if query.message.photo:
-            try:
+        
+        # 3. 處理畫面更新：照片訊息安全移除後重送文字確認卡片
+        try:
+            if query.message.photo:
                 await query.message.delete()
-            except Exception:
-                pass
+                await context.bot.send_message(chat_id=query.message.chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            else:
+                await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
+        except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        else:
-            await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
     # 2. 查看今日行程
@@ -629,7 +639,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 單筆已審批明細（包含小寶貝專屬收款確認鈕）
+    # 單筆已審批明細（包含本人專屬收款確認鈕）
     elif data.startswith("receipt_detail_"):
         b_id = int(data.split("_")[2])
         b_info = local_bills.get(b_id)
