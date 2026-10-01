@@ -1,6 +1,7 @@
 import os
 import asyncio
 import aiohttp
+from datetime import datetime
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.error import BadRequest
@@ -13,13 +14,14 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
-ADMIN_CHAT_ID = 7203467559
+ADMIN_CHAT_ID = 7203467559  # 妳的專屬 ID
 GAS_URL = "https://script.google.com/macros/s/AKfycbxdhzx6EWM5TYGOMJm0AMJpI6SUwmWyegeAMDQ-nt6JRORbsMV5VsaLSm75LRGo916H/exec"
 
 # 本機記憶體快取
 local_bills = {}
 today_plan_text = "• 載入中，請稍候..."
 local_wishes = []
+local_moods = []
 wish_counter = 0
 
 # 純非同步背景通訊：關鍵加上 allow_redirects=True 穿透 Google 302 轉址
@@ -37,7 +39,7 @@ async def fetch_gas(params):
     return None
 
 async def bg_sync_all():
-    global local_bills, today_plan_text, local_wishes, wish_counter
+    global local_bills, today_plan_text, local_wishes, local_moods, wish_counter
     # 1. 抓請款
     res_bills = await fetch_gas({"action": "get"})
     if isinstance(res_bills, dict):
@@ -56,11 +58,18 @@ async def bg_sync_all():
         if local_wishes:
             wish_counter = max([int(w["id"]) for w in local_wishes if str(w["id"]).isdigit()], default=0)
 
+    # 4. 抓心情相簿
+    res_moods = await fetch_gas({"action": "get_moods"})
+    if isinstance(res_moods, dict) and "moods" in res_moods:
+        local_moods = res_moods["moods"]
+
 def get_main_menu_markup():
     keyboard = [
+        [InlineKeyboardButton("📸 小寶貝今日心情相簿", callback_data="show_moods")],
         [InlineKeyboardButton("📍 查看今日行程報備", callback_data="show_plan")],
         [InlineKeyboardButton("🎁 查看小寶貝許願池", callback_data="show_wishes")],
-        [InlineKeyboardButton("📋 查看待審請款單", callback_data="list_bills")]
+        [InlineKeyboardButton("📋 查看待審請款單", callback_data="list_bills")],
+        [InlineKeyboardButton("📊 查看已審批總額 (含收款確認)", callback_data="show_approved_summary")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -120,15 +129,15 @@ async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📍 *今日行程報備已更新並永久存檔！*\n━━━━━━━━━━━━━━━\n{today_plan_text}", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "set_plan", "plan": today_plan_text}))
 
-# 3. 文字許願指令（僅限本人）：/wish 內容
+# 3. 願望指令（僅限本人）：/wish 內容
 async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_wishes, wish_counter
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
+        await update.message.reply_text("⚠️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
         return
 
     if not context.args:
-        await update.message.reply_text("請輸入願望內容！例如：\n`/wish 想要一隻可愛大娃娃`\n💡 *也可以直接傳照片留言許願喔！*", parse_mode="Markdown")
+        await update.message.reply_text("請輸入願望內容！例如：\n`/wish 想要新耳機`\n💡 *也可以傳照片並打「/wish 項目」許願喔！*", parse_mode="Markdown")
         return
 
     item = " ".join(context.args)
@@ -137,27 +146,52 @@ async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✨ 願望已成功丟進許願池：\n「*{item}*」\n金主已收到風聲！", parse_mode="Markdown")
     asyncio.create_task(fetch_gas({"action": "add_wish", "item": item, "photo_id": ""}))
 
-# 4. 照片許願指令（僅限本人）：傳照片 + 留言
-async def handle_photo_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global local_wishes, wish_counter
+# 4. 心情日記指令：/mood 文字
+async def add_mood(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global local_moods
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 只有小寶貝本人可以傳照片許願喔！")
+        await update.message.reply_text("⚠️ 心情日記是小寶貝的專屬畫布喔！")
         return
 
-    caption = update.message.caption or "想要這個禮物"
-    item = caption.replace("/wish", "").strip() or "想要這個禮物"
+    text = " ".join(context.args) if context.args else "今天也是元氣滿滿的一天～✨"
+    time_str = datetime.now().strftime("%H:%M")
+    m_id = len(local_moods) + 1
+    local_moods.append({"id": m_id, "text": text, "photoId": "", "time": time_str})
+    await update.message.reply_text(f"📝 *今日心情已記錄！*\n「{text}」", parse_mode="Markdown")
+    asyncio.create_task(fetch_gas({"action": "add_mood", "text": text, "photo_id": ""}))
+
+# 照片訊息處理：自動辨識是許願還是心情相簿
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global local_wishes, wish_counter, local_moods
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 只有小寶貝本人可以上傳照片喔！")
+        return
+
+    caption = (update.message.caption or "").strip()
     photo_id = update.message.photo[-1].file_id
 
-    wish_counter += 1
-    local_wishes.append({"id": wish_counter, "item": item, "photoId": photo_id, "status": "待實現"})
-    await update.message.reply_text(f"📸 *照片願望已存入許願池！*\n• 願望項目：*{item}*", parse_mode="Markdown")
-    asyncio.create_task(fetch_gas({"action": "add_wish", "item": item, "photo_id": photo_id}))
+    # 如果有寫 /wish 或包含「願望/想要」等字眼，歸類為許願池
+    if caption.startswith("/wish") or "想要" in caption or "許願" in caption:
+        item = caption.replace("/wish", "").strip() or "想要這個禮物"
+        wish_counter += 1
+        local_wishes.append({"id": wish_counter, "item": item, "photoId": photo_id, "status": "待實現"})
+        await update.message.reply_text(f"📸 *照片願望已存入許願池！*\n• 願望項目：*{item}*", parse_mode="Markdown")
+        asyncio.create_task(fetch_gas({"action": "add_wish", "item": item, "photo_id": photo_id}))
+    else:
+        # 否則直接歸類為「今日心情相簿」
+        mood_text = caption if caption else "紀錄美好的一刻 📸"
+        time_str = datetime.now().strftime("%H:%M")
+        m_id = len(local_moods) + 1
+        local_moods.append({"id": m_id, "text": mood_text, "photoId": photo_id, "time": time_str})
+        await update.message.reply_text(f"🌸 *已收錄進今日心情相簿！*\n「{mood_text}」", parse_mode="Markdown")
+        asyncio.create_task(fetch_gas({"action": "add_mood", "text": mood_text, "photo_id": photo_id}))
 
 # 按鈕回調處理
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global local_bills, today_plan_text, local_wishes
+    global local_bills, today_plan_text, local_wishes, local_moods
     query = update.callback_query
     data = query.data
+    user_id = query.from_user.id
     approver = query.from_user.first_name
 
     try:
@@ -178,9 +212,74 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, text, get_main_menu_markup())
         return
 
-    # 1. 查看今日行程
+    # 1. 小寶貝今日心情相簿
+    elif data == "show_moods":
+        res_moods = await fetch_gas({"action": "get_moods"})
+        if isinstance(res_moods, dict) and "moods" in res_moods:
+            local_moods = res_moods["moods"]
+
+        if not local_moods:
+            text = "🌸 *【小寶貝今日心情相簿】*\n今天還沒有發布日常動態喔！\n小寶貝只要直接傳送照片就會自動收錄進來～"
+            keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
+            if query.message.photo:
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                await context.bot.send_message(chat_id=query.message.chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            else:
+                await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
+            return
+
+        text = "🌸 *【小寶貝今日心情相簿】*\n點擊查看精彩瞬間："
+        keyboard = []
+        for m in local_moods:
+            icon = "📷 " if m.get("photoId") else "💭 "
+            title = f"{icon}{m['text'][:15]}"
+            keyboard.append([InlineKeyboardButton(title, callback_data=f"view_mood_{m['id']}")])
+        keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
+
+        if query.message.photo:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(chat_id=query.message.chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        else:
+            await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
+        return
+
+    elif data.startswith("view_mood_"):
+        m_id = int(data.split("_")[2])
+        m = next((x for x in local_moods if int(x["id"]) == m_id), None)
+        if not m:
+            await safe_edit_text(query, "找不到該心情紀錄！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回相簿", callback_data="show_moods")]]))
+            return
+
+        caption = f"🌸 *今日心情日常*\n━━━━━━━━━━━━━━━\n「{m['text']}」\n━━━━━━━━━━━━━━━\n時間：{m.get('time', '剛剛')}"
+        keyboard = [
+            [InlineKeyboardButton("📸 看其他動態", callback_data="show_moods")],
+            [InlineKeyboardButton("🏠 回主選單", callback_data="back_main")]
+        ]
+
+        if m.get("photoId"):
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=m["photoId"],
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        else:
+            await safe_edit_text(query, caption, InlineKeyboardMarkup(keyboard))
+        return
+
+    # 2. 查看今日行程
     elif data == "show_plan":
-        # 點擊時同步最新行程
         res_plan = await fetch_gas({"action": "get_plan"})
         if isinstance(res_plan, dict) and "plan" in res_plan and str(res_plan["plan"]).strip():
             today_plan_text = str(res_plan["plan"])
@@ -199,13 +298,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 2. 查看許願池清單（點擊時即時向試算表拉取最新資料）
+    # 3. 查看許願池清單
     elif data == "show_wishes":
         res_wishes = await fetch_gas({"action": "get_wishes"})
         if isinstance(res_wishes, dict) and "wishes" in res_wishes:
             local_wishes = res_wishes["wishes"]
 
-        # 寬鬆容錯：只要狀態不是「已實現」就算有效願望
         pending_wishes = [
             w for w in local_wishes 
             if "已實現" not in str(w.get("status", "")).strip() and str(w.get("item", "")).strip() != ""
@@ -242,7 +340,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 3. 檢視願望詳情
     elif data.startswith("view_wish_"):
         w_id = int(data.split("_")[2])
         w = next((x for x in local_wishes if int(x["id"]) == w_id), None)
@@ -272,7 +369,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, caption, InlineKeyboardMarkup(keyboard))
         return
 
-    # 4. 認領/實現願望
     elif data.startswith("fulfill_"):
         w_id = int(data.split("_")[1])
         target_wish = next((w for w in local_wishes if int(w["id"]) == w_id), None)
@@ -310,7 +406,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # 5. 請款清單
+    # 4. 請款清單（待審核）
     elif data == "list_bills":
         res_bills = await fetch_gas({"action": "get"})
         if isinstance(res_bills, dict):
@@ -332,7 +428,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 6. 單筆請款
     elif data.startswith("view_"):
         b_id = int(data.split("_")[1])
         b_info = local_bills.get(b_id)
@@ -359,31 +454,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 7. 准予核銷
+    # 金主核准（狀態變更為：金主已核准 (待收款)）
     elif data.startswith("approve_"):
         b_id = int(data.split("_")[1])
         if b_id in local_bills:
-            local_bills[b_id]["status"] = "已核銷"
+            local_bills[b_id]["status"] = "金主已核准"
             item = local_bills[b_id]["item"]
             amount = local_bills[b_id]["amount"]
 
             text = (
-                f"✅ *核銷成功！*\n"
+                f"✅ *金主已核准！*\n"
                 f"金主 {approver} 已核准單號 #{b_id}（{item} - ${amount} TWD）。\n"
-                f"謝謝老闆！"
+                f"等待小寶貝查核入帳後點擊收款確認！"
             )
             keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
             await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
 
-            asyncio.create_task(fetch_gas({"action": "update", "id": b_id, "status": "已核銷"}))
+            asyncio.create_task(fetch_gas({"action": "update", "id": b_id, "status": "金主已核准"}))
 
             notify_msg = (
-                f"🔔 *【入帳通報】*\n"
+                f"🔔 *【金主核准通報】*\n"
                 f"金主 *{approver}* 剛剛核准了請款！\n"
                 f"• 單號：#{b_id}\n"
                 f"• 項目：{item}\n"
                 f"• 金額：${amount} TWD\n"
-                f"請記得查核入帳款項～"
+                f"收到轉帳後，可至「📊 查看已審批總額」確認已收到款項喔！"
             )
             try:
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=notify_msg, parse_mode="Markdown")
@@ -391,7 +486,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # 8. 大膽駁回
     elif data.startswith("reject_"):
         b_id = int(data.split("_")[1])
         if b_id in local_bills:
@@ -421,6 +515,111 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
+    # 5. 查看已審批總額清單
+    elif data == "show_approved_summary":
+        res_bills = await fetch_gas({"action": "get"})
+        if isinstance(res_bills, dict):
+            local_bills = {int(k): v for k, v in res_bills.items() if str(k).isdigit()}
+
+        # 只要是「金主已核准」或「已核銷/已入帳」都屬於審批通過
+        approved_bills = {
+            k: v for k, v in local_bills.items() 
+            if any(st in v.get("status", "") for st in ["已核銷", "金主已核准", "已入帳", "已結清"])
+        }
+        
+        total_amount = 0
+        keyboard = []
+        for b_id, b_info in approved_bills.items():
+            try:
+                amt = float(str(b_info.get("amount", 0)).replace(",", ""))
+            except ValueError:
+                amt = 0.0
+            total_amount += amt
+            
+            is_received = "已結清" in b_info.get("status", "") or "已核銷" in b_info.get("status", "")
+            status_tag = "✅ 已結清" if is_received else "⏳ 待小寶貝確認收款"
+            btn_text = f"#{b_id} {b_info['item']} (${int(amt)}) [{status_tag}]"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"receipt_detail_{b_id}")])
+
+        keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
+
+        if not approved_bills:
+            text = (
+                "📊 *【已審批請款統計】*\n"
+                "━━━━━━━━━━━━━━━\n"
+                "目前尚無任何審核通過的請款紀錄。\n"
+                "━━━━━━━━━━━━━━━"
+            )
+        else:
+            text = (
+                "📊 *【已審批請款總額總覽】*\n"
+                "━━━━━━━━━━━━━━━\n"
+                f"💰 *累計審批總額*：`${int(total_amount) if total_amount.is_integer() else total_amount:,} TWD`\n"
+                f"📦 *核准總筆數*：{len(approved_bills)} 筆\n"
+                "━━━━━━━━━━━━━━━\n"
+                "👇 *點擊下方項目查看明細與進行收款核銷：*"
+            )
+
+        await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
+        return
+
+    # 單筆已審批明細（包含小寶貝專屬收款確認鈕）
+    elif data.startswith("receipt_detail_"):
+        b_id = int(data.split("_")[2])
+        b_info = local_bills.get(b_id)
+        if not b_info:
+            await safe_edit_text(query, "查無此單號！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回總表", callback_data="show_approved_summary")]]))
+            return
+
+        is_settled = "已結清" in b_info.get("status", "") or "已核銷" in b_info.get("status", "")
+        status_show = "✅ 已結清入帳" if is_settled else "⏳ 金主已核准 (等待小寶貝確認收到)"
+
+        text = (
+            f"🧾 *已審批款項明細 - 單號 #{b_id}*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"• 項目：*{b_info['item']}*\n"
+            f"• 金額：`${b_info['amount']} TWD`\n"
+            f"• 目前狀態：*{status_show}*\n"
+            f"━━━━━━━━━━━━━━━"
+        )
+
+        keyboard = []
+        # 只有在「尚未結清入帳」時顯示收款確認按鈕
+        if not is_settled:
+            keyboard.append([InlineKeyboardButton("💸 【小寶貝專屬】我已收到款項！", callback_data=f"confirm_received_{b_id}")])
+        keyboard.append([InlineKeyboardButton("⬅️ 返回總額清單", callback_data="show_approved_summary")])
+
+        await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
+        return
+
+    # 點擊「我已收到款項」：權限判定僅限小寶貝本人（ADMIN_CHAT_ID）
+    elif data.startswith("confirm_received_"):
+        b_id = int(data.split("_")[2])
+
+        if user_id != ADMIN_CHAT_ID:
+            try:
+                await query.answer("⚠️ 這是小寶貝專屬的確認入帳按鈕，金主不能代按喔！🥰", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        if b_id in local_bills:
+            local_bills[b_id]["status"] = "已結清入帳"
+            item = local_bills[b_id]["item"]
+            amount = local_bills[b_id]["amount"]
+
+            text = (
+                f"🎉 *款項核銷結清完成！*\n"
+                f"小寶貝已確認收到單號 #{b_id}（{item} - ${amount} TWD）款項！\n"
+                f"感謝金主～好感度再度提升！💖"
+            )
+            keyboard = [[InlineKeyboardButton("📊 返回總額清單", callback_data="show_approved_summary")]]
+            await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
+
+            # 同步回試算表
+            asyncio.create_task(fetch_gas({"action": "update", "id": b_id, "status": "已結清入帳"}))
+        return
+
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -438,16 +637,18 @@ async def run_bot():
     
     commands = [
         BotCommand("menu", "喚出主選單"),
+        BotCommand("mood", "紀錄今日心情 (例: /mood 拿鐵超好喝)"),
         BotCommand("wish", "新增願望 (例: /wish 想要新耳機)"),
         BotCommand("plan", "更新行程 (例: /plan 15:00 健身房)"),
         BotCommand("bill", "新增請款 (例: /bill 火鍋 800)"),
     ]
     app.add_handler(CommandHandler("start", menu))
     app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("mood", add_mood))
     app.add_handler(CommandHandler("wish", add_wish))
     app.add_handler(CommandHandler("plan", set_plan))
     app.add_handler(CommandHandler("bill", add_bill))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo_wish))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     # 1. 啟動 Web 服務供 Render 存活偵測
