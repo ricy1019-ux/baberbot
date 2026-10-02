@@ -63,6 +63,22 @@ async def bg_sync_all():
     if isinstance(res_moods, dict) and "moods" in res_moods:
         local_moods = res_moods["moods"]
 
+# 金主動作即時通報核心函式
+async def notify_admin_activity(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_name: str, action_desc: str):
+    if int(user_id) != int(ADMIN_CHAT_ID):
+        now_time = datetime.now().strftime("%H:%M:%S")
+        msg = (
+            f"👀 *【金主足跡通報】*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"👤 金主：*{user_name}*\n"
+            f"⚡ 動態：{action_desc}\n"
+            f"⏰ 時間：`{now_time}`"
+        )
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="Markdown")
+        except Exception as e:
+            print(f"[動作通報發送失敗] {e}")
+
 def get_main_menu_markup():
     keyboard = [
         [InlineKeyboardButton("📸 小寶貝今日心情相簿", callback_data="show_moods")],
@@ -254,13 +270,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1. 小寶貝今日心情相簿
     elif data == "show_moods":
+        asyncio.create_task(notify_admin_activity(context, user_id, approver, "打開了 *今日心情相簿* 瀏覽清單 📸"))
         res_moods = await fetch_gas({"action": "get_moods"})
         if isinstance(res_moods, dict) and "moods" in res_moods:
             local_moods = res_moods["moods"]
 
         if not local_moods:
             text = "🌸 *【小寶貝今日心情相簿】*\n今天還沒有發布日常動態喔！\n小寶貝只要直接傳送照片就會自動收錄進來～"
-            keyboard = [[InlineKeyboardButton("⬅️️ 回主選單", callback_data="back_main")]]
+            keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
             if query.message.photo:
                 try:
                     await query.message.delete()
@@ -289,13 +306,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 查看單筆心情（含本人專屬刪除鈕）
+    # 查看單筆心情（含動作回報 + 本人專屬刪除鈕）
     elif data.startswith("view_mood_"):
         m_id_str = str(data.split("_")[2]).strip()
         m = next((x for x in local_moods if str(x.get("id", "")).strip() == m_id_str), None)
         if not m:
             await safe_edit_text(query, "找不到該心情紀錄！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回相簿", callback_data="show_moods")]]))
             return
+
+        # 金主點開查看照片/動態通報
+        has_photo = "（附照片 📸）" if m.get("photoId") else ""
+        asyncio.create_task(notify_admin_activity(
+            context, user_id, approver, 
+            f"點看了心情動態{has_photo}：\n「*{m['text']}*」"
+        ))
 
         caption = f"🌸 *今日心情日常*\n━━━━━━━━━━━━━━━\n「{m['text']}」\n━━━━━━━━━━━━━━━\n時間：{m.get('time', '剛剛')}"
         keyboard = []
@@ -325,7 +349,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("del_mood_"):
         m_id_str = str(data.split("_")[2]).strip()
         
-        # 1. 權限檢查
         if int(user_id) != int(ADMIN_CHAT_ID):
             try:
                 await query.answer(f"⚠️ 這是小寶貝專屬功能！\n你的ID: {user_id}\n後台ID: {ADMIN_CHAT_ID}", show_alert=True)
@@ -341,10 +364,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_m = next((x for x in local_moods if str(x.get("id", "")).strip() == m_id_str), None)
         target_text = target_m.get("text", "") if target_m else ""
 
-        # 2. 本地快取立即移除
         local_moods = [m for m in local_moods if str(m.get("id", "")).strip() != m_id_str]
 
-        # 3. 同步送出給 GAS 並等待回應
         res = await fetch_gas({"action": "delete_mood", "id": m_id_str, "text": target_text})
         print(f"[刪除除錯回應] 刪除ID {m_id_str}, 文字 {target_text}, 結果: {res}")
 
@@ -354,7 +375,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 回主選單", callback_data="back_main")]
         ]
         
-        # 4. 畫面安全更新（防範照片訊息例外）
         try:
             if query.message.photo:
                 await query.message.delete()
@@ -367,6 +387,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2. 查看今日行程
     elif data == "show_plan":
+        asyncio.create_task(notify_admin_activity(context, user_id, approver, "查閱了妳的 *今日行程報備* 📍"))
         res_plan = await fetch_gas({"action": "get_plan"})
         if isinstance(res_plan, dict) and "plan" in res_plan and str(res_plan["plan"]).strip():
             today_plan_text = str(res_plan["plan"])
@@ -387,6 +408,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 3. 查看許願池清單
     elif data == "show_wishes":
+        asyncio.create_task(notify_admin_activity(context, user_id, approver, "打開了 *小寶貝許願池* 🎁"))
         res_wishes = await fetch_gas({"action": "get_wishes"})
         if isinstance(res_wishes, dict) and "wishes" in res_wishes:
             local_wishes = res_wishes["wishes"]
@@ -427,12 +449,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
+    # 查看單筆願望（含金主動作回報）
     elif data.startswith("view_wish_"):
         w_id = int(data.split("_")[2])
         w = next((x for x in local_wishes if int(x["id"]) == w_id), None)
         if not w or "已實現" in str(w.get("status", "")):
             await safe_edit_text(query, "此願望已實現或不存在！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 回許願池", callback_data="show_wishes")]]))
             return
+
+        # 金主偷看願望通報
+        has_photo = "（附照片 📸）" if w.get("photoId") else ""
+        asyncio.create_task(notify_admin_activity(
+            context, user_id, approver, 
+            f"正在仔細查看願望項目{has_photo}：\n「*{w['item']}*」"
+        ))
 
         caption = f"🎁 *願望詳情*\n━━━━━━━━━━━━━━━\n項目：*{w['item']}*\n━━━━━━━━━━━━━━━\n金主要幫忙實現嗎？"
         keyboard = [
@@ -495,6 +525,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 4. 請款清單（待審核）
     elif data == "list_bills":
+        asyncio.create_task(notify_admin_activity(context, user_id, approver, "查閱了 *待審核請款清單* 📋"))
         res_bills = await fetch_gas({"action": "get"})
         if isinstance(res_bills, dict):
             local_bills = {int(k): v for k, v in res_bills.items() if str(k).isdigit()}
@@ -521,6 +552,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not b_info or b_info.get("status") != "待審核":
             await safe_edit_text(query, "此請款單已處理完成或不存在！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]))
             return
+
+        asyncio.create_task(notify_admin_activity(
+            context, user_id, approver, 
+            f"正在審查單號 #{b_id}：{b_info['item']} (${b_info['amount']} TWD)"
+        ))
 
         text = (
             f"🧾 *請款審核中 - 單號 #{b_id}*\n"
@@ -604,6 +640,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 5. 查看已審批總額清單
     elif data == "show_approved_summary":
+        asyncio.create_task(notify_admin_activity(context, user_id, approver, "查閱了 *已審批款項總額統計* 📊"))
         res_bills = await fetch_gas({"action": "get"})
         if isinstance(res_bills, dict):
             local_bills = {int(k): v for k, v in res_bills.items() if str(k).isdigit()}
