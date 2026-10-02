@@ -1,6 +1,8 @@
 import os
+import json
 import asyncio
-import aiohttp
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -22,19 +24,27 @@ today_plan_text = "• 暫無特別行程報備"
 local_wishes = []
 local_moods = []
 
-async def fetch_gas(params):
+# 底層連線：使用 urllib 原生處理 Google 302 跨域重定向
+def _sync_fetch_gas(params):
     try:
-        timeout = aiohttp.ClientTimeout(total=12.0)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(GAS_URL, params=params, allow_redirects=True) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    return data
-                else:
-                    print(f"[GAS回應異常] HTTP {resp.status}")
+        query_string = urllib.parse.urlencode(params)
+        full_url = f"{GAS_URL}?{query_string}"
+        req = urllib.request.Request(
+            full_url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            if response.status == 200:
+                body = response.read().decode("utf-8")
+                return json.loads(body)
+            else:
+                print(f"[GAS回應異常] HTTP {response.status}")
     except Exception as e:
-        print(f"[GAS連線提示] 失敗動作: {params.get('action')}, 錯誤: {e}")
+        print(f"[GAS連線錯誤] 動作: {params.get('action')}, 原因: {e}")
     return None
+
+async def fetch_gas(params):
+    return await asyncio.to_thread(_sync_fetch_gas, params)
 
 # 即時刷新各項模組資料
 async def sync_bills():
@@ -126,7 +136,6 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = args[-1]
     applicant = update.effective_user.first_name
     
-    # 同步寫入 GAS
     res = await fetch_gas({"action": "add", "item": item, "amount": amount, "applicant": applicant})
     await sync_bills()
     b_id = res.get("id") if (isinstance(res, dict) and "id" in res) else "新建立"
@@ -151,7 +160,7 @@ async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 3. 願望指令
 async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
+        await update.message.reply_text("⚠️️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
         return
 
     if not context.args:
@@ -330,7 +339,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if int(user_id) != int(ADMIN_CHAT_ID):
             try:
-                await query.answer(f"⚠️ 這是小寶貝專屬功能！", show_alert=True)
+                await query.answer("⚠️ 這是小寶貝專屬功能！", show_alert=True)
             except Exception:
                 pass
             return
@@ -338,7 +347,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_m = next((x for x in local_moods if str(x.get("id", "")).strip() == m_id_str), None)
         target_text = target_m.get("text", "") if target_m else ""
 
-        # 強制等待 GAS 刪除完畢
         await fetch_gas({"action": "delete_mood", "id": m_id_str, "text": target_text})
         await sync_moods()
 
@@ -454,7 +462,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, caption, InlineKeyboardMarkup(keyboard))
         return
 
-    # 認領實現願望
+    # 認領實現願望（小寶貝與金主皆可）
     elif data.startswith("fulfill_"):
         if int(user_id) != int(PATRON_CHAT_ID) and int(user_id) != int(ADMIN_CHAT_ID):
             try:
@@ -594,7 +602,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("reject_"):
         if int(user_id) != int(PATRON_CHAT_ID) and int(user_id) != int(ADMIN_CHAT_ID):
             try:
-                await query.answer("⚠️ 只有小寶貝本人或專屬金主才能駁回請款喔！", show_alert=True)
+                await query.answer("⚠️️ 只有小寶貝本人或專屬金主才能駁回請款喔！", show_alert=True)
             except Exception:
                 pass
             return
@@ -650,7 +658,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btn_text = f"#{b_id} {b_info['item']} (${int(amt)}) [{status_tag}]"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"receipt_detail_{b_id}")])
 
-        keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
+        keyboard.append([InlineKeyboardButton("⬅️️ 回主選單", callback_data="back_main")])
 
         if not approved_bills:
             text = (
@@ -783,9 +791,9 @@ async def run_bot():
     await app.start()
     await app.updater.start_polling()
 
-    # 開機初次同步
+    # 開機時強制拉取 Google 試算表歷史資料
     await asyncio.gather(sync_bills(), sync_plan(), sync_wishes(), sync_moods(), return_exceptions=True)
-    print("小寶貝維運機器人運行中 (即時同步版)...")
+    print("小寶貝維運機器人運行中 (原生穿透重定向版)...")
 
     stop_event = asyncio.Event()
     await stop_event.wait()
