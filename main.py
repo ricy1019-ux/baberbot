@@ -17,14 +17,14 @@ except RuntimeError:
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559     # 小寶貝專屬最高管理員 ID
 PATRON_CHAT_ID = 8098610953    # 金主專屬 ID
-GAS_URL = "https://script.google.com/macros/s/AKfycbx5NjemT77BglFbGJUWwBEeEDc69x9JEe39Ym0l6aRtspLkrciZ19-qnsTTs-L2Onv2/exec"
+GAS_URL = "https://script.google.com/macros/s/AKfycbyCwNUYp_AD27h4Vwp6zLb1_13tag2yVw04vIAv250FGNK0uae9h-uY94zWbSvpEYKE/exec"
 
 local_bills = {}
 today_plan_text = "• 暫無特別行程報備"
 local_wishes = []
 local_moods = []
 
-# 底層連線：使用 urllib 原生處理 Google 302 跨域重定向
+# 底層連線：原生跟隨 Google 302 重定向
 def _sync_fetch_gas(params):
     try:
         query_string = urllib.parse.urlencode(params)
@@ -39,9 +39,10 @@ def _sync_fetch_gas(params):
                 return json.loads(body)
             else:
                 print(f"[GAS回應異常] HTTP {response.status}")
+                return {"error_status": response.status}
     except Exception as e:
         print(f"[GAS連線錯誤] 動作: {params.get('action')}, 原因: {e}")
-    return None
+        return {"error_exception": str(e)}
 
 async def fetch_gas(params):
     return await asyncio.to_thread(_sync_fetch_gas, params)
@@ -50,7 +51,7 @@ async def fetch_gas(params):
 async def sync_bills():
     global local_bills
     res = await fetch_gas({"action": "get"})
-    if isinstance(res, dict):
+    if isinstance(res, dict) and "error_status" not in res and "error_exception" not in res:
         local_bills = {int(k): v for k, v in res.items() if str(k).isdigit()}
     return local_bills
 
@@ -76,6 +77,7 @@ async def sync_moods():
         local_moods = res["moods"]
     return local_moods
 
+# 金主動作足跡通報（僅當操作者為金主時私訊小寶貝）
 async def notify_admin_activity(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_name: str, action_desc: str):
     if int(user_id) == int(PATRON_CHAT_ID):
         now_time = datetime.now().strftime("%H:%M:%S")
@@ -121,7 +123,21 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👑 *【小寶貝維運中心】控制面板*\n請選擇您要執行的操作："
     await update.message.reply_text(text, reply_markup=get_main_menu_markup(), parse_mode="Markdown")
 
-# 1. 請款指令
+# 診斷指令：/testgas
+async def test_gas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 正在嘗試與最新 Google 試算表連線檢測，請稍候...")
+    res = await fetch_gas({"action": "get"})
+    if isinstance(res, dict):
+        if "error_status" in res:
+            await update.message.reply_text(f"❌ 連線失敗！Google 回傳 HTTP 代碼: {res['error_status']}")
+        elif "error_exception" in res:
+            await update.message.reply_text(f"❌ 發生例外錯誤: {res['error_exception']}")
+        else:
+            await update.message.reply_text(f"✅ 連線大成功！試算表資料筆數: {len(res)}\n內容摘要:\n`{str(res)[:300]}`", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ 未知回傳結果: {type(res)}")
+
+# 1. 請款指令（小寶貝專屬）
 async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
         await update.message.reply_text("⚠️ 只有小寶貝本人可以請款，金主請乖乖審核就好喔！🥰")
@@ -142,7 +158,7 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ 已成功建立並同步至試算表！\n單號：#{b_id} *{item}* (${amount} TWD)", parse_mode="Markdown")
 
-# 2. 行程報備指令
+# 2. 行程報備指令（小寶貝專屬）
 async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
         await update.message.reply_text("⚠️ 只有小寶貝本人可以更新行程報備喔！")
@@ -157,10 +173,10 @@ async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sync_plan()
     await update.message.reply_text(f"📍 *今日行程報備已更新並永久存檔！*\n━━━━━━━━━━━━━━━\n{plan_text}", parse_mode="Markdown")
 
-# 3. 願望指令
+# 3. 願望指令（小寶貝專屬）
 async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
+        await update.message.reply_text("⚠️ 許願池是小寶貝專屬的，金主只有幫忙實現的份喔！💖")
         return
 
     if not context.args:
@@ -172,7 +188,7 @@ async def add_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sync_wishes()
     await update.message.reply_text(f"✨ 願望已成功丟進許願池並存檔：\n「*{item}*」\n金主已收到風聲！", parse_mode="Markdown")
 
-# 4. 心情日記指令
+# 4. 心情日記指令（小寶貝專屬）
 async def add_mood(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
         await update.message.reply_text("⚠️ 心情日記是小寶貝的專屬畫布喔！")
@@ -258,7 +274,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, text, get_main_menu_markup())
         return
 
-    # 1. 小寶貝今日心情相簿（即時抓取）
+    # 1. 小寶貝今日心情相簿
     elif data == "show_moods":
         asyncio.create_task(notify_admin_activity(context, user_id, approver, "打開了 *今日心情相簿* 瀏覽清單 📸"))
         await sync_moods()
@@ -333,7 +349,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_text(query, caption, InlineKeyboardMarkup(keyboard))
         return
 
-    # 刪除心情動態
+    # 刪除心情動態（小寶貝專屬）
     elif data.startswith("del_mood_"):
         m_id_str = str(data.split("_")[2]).strip()
         
@@ -366,7 +382,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=query.message.chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
-    # 2. 查看今日行程（即時抓取）
+    # 2. 查看今日行程
     elif data == "show_plan":
         asyncio.create_task(notify_admin_activity(context, user_id, approver, "查閱了妳的 *今日行程報備* 📍"))
         await sync_plan()
@@ -385,7 +401,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 3. 查看許願池清單（即時抓取）
+    # 3. 查看許願池清單
     elif data == "show_wishes":
         asyncio.create_task(notify_admin_activity(context, user_id, approver, "打開了 *小寶貝許願池* 🎁"))
         await sync_wishes()
@@ -506,7 +522,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # 4. 請款清單（即時抓取）
+    # 4. 請款清單
     elif data == "list_bills":
         asyncio.create_task(notify_admin_activity(context, user_id, approver, "查閱了 *待審核請款清單* 📋"))
         await sync_bills()
@@ -559,7 +575,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 核准請款
+    # 核准請款（小寶貝與金主皆可）
     elif data.startswith("approve_"):
         if int(user_id) != int(PATRON_CHAT_ID) and int(user_id) != int(ADMIN_CHAT_ID):
             try:
@@ -598,7 +614,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # 駁回請款
+    # 駁回請款（小寶貝與金主皆可）
     elif data.startswith("reject_"):
         if int(user_id) != int(PATRON_CHAT_ID) and int(user_id) != int(ADMIN_CHAT_ID):
             try:
@@ -634,7 +650,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # 5. 查看已審批總額清單（即時抓取）
+    # 5. 查看已審批總額清單
     elif data == "show_approved_summary":
         asyncio.create_task(notify_admin_activity(context, user_id, approver, "查閱了 *已審批款項總額統計* 📊"))
         await sync_bills()
@@ -658,7 +674,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btn_text = f"#{b_id} {b_info['item']} (${int(amt)}) [{status_tag}]"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"receipt_detail_{b_id}")])
 
-        keyboard.append([InlineKeyboardButton("⬅️️ 回主選單", callback_data="back_main")])
+        keyboard.append([InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")])
 
         if not approved_bills:
             text = (
@@ -709,7 +725,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
-    # 點擊「我已收到款項」
+    # 點擊「我已收到款項」（小寶貝專屬）
     elif data.startswith("confirm_received_"):
         b_id = int(data.split("_")[2])
 
@@ -769,6 +785,7 @@ async def run_bot():
     
     commands = [
         BotCommand("menu", "喚出主選單"),
+        BotCommand("testgas", "診斷試算表連線狀態"),
         BotCommand("feedback", "金主意見反應 (例: /feedback 想去吃泰式)"),
         BotCommand("mood", "紀錄今日心情 (例: /mood 拿鐵超好喝)"),
         BotCommand("wish", "新增願望 (例: /wish 想要新耳機)"),
@@ -777,6 +794,7 @@ async def run_bot():
     ]
     app.add_handler(CommandHandler("start", menu))
     app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("testgas", test_gas_command))
     app.add_handler(CommandHandler("feedback", add_feedback))
     app.add_handler(CommandHandler("mood", add_mood))
     app.add_handler(CommandHandler("wish", add_wish))
@@ -791,9 +809,8 @@ async def run_bot():
     await app.start()
     await app.updater.start_polling()
 
-    # 開機時強制拉取 Google 試算表歷史資料
     await asyncio.gather(sync_bills(), sync_plan(), sync_wishes(), sync_moods(), return_exceptions=True)
-    print("小寶貝維運機器人運行中 (原生穿透重定向版)...")
+    print("小寶貝維運機器人運行中 (全新部署 ID 版)...")
 
     stop_event = asyncio.Event()
     await stop_event.wait()
