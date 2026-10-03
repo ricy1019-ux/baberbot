@@ -17,7 +17,7 @@ except RuntimeError:
 BOT_TOKEN = "8924211445:AAFFUXCsYImG_XadjPGM-ts6XmN8lSTDjzA"
 ADMIN_CHAT_ID = 7203467559     # 小寶貝專屬最高管理員 ID
 PATRON_CHAT_ID = 8098610953    # 金主專屬 ID
-GAS_URL = "https://script.google.com/macros/s/AKfycbyCwNUYp_AD27h4Vwp6zLb1_13tag2yVw04vIAv250FGNK0uae9h-uY94zWbSvpEYKE/exec"
+GAS_URL = "https://script.google.com/macros/s/AKfycbzWacIdrq3WecLBU1xUSbmCikLrGCwKtSUc6ypFGJWvob66w7ZMX2r-tVMM6VkCFO_V/exec"
 
 local_bills = {}
 today_plan_text = "• 暫無特別行程報備"
@@ -30,7 +30,6 @@ local_trip_todos = []
 
 def _sync_fetch_gas(params):
     try:
-        # 強制將所有字串以 UTF-8 完整 URL 編碼
         clean_params = {k: str(v) for k, v in params.items()}
         query_string = urllib.parse.urlencode(clean_params, quote_via=urllib.parse.quote)
         full_url = f"{GAS_URL}?{query_string}"
@@ -43,7 +42,6 @@ def _sync_fetch_gas(params):
             if response.status == 200:
                 body = response.read().decode("utf-8")
                 data = json.loads(body)
-                print(f"[GAS連線成功] 動作: {params.get('action')}, 回傳: {data}")
                 return data
             else:
                 print(f"[GAS回應異常] HTTP {response.status}")
@@ -182,13 +180,9 @@ async def add_trip_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("格式：`/trip_plan 行程內容`\n例如：`/trip_plan 10/24 抵達福岡 吃燒鳥`", parse_mode="Markdown")
         return
     content = " ".join(context.args)
-    # 同步等待寫入並檢查結果
     res = await fetch_gas({"action": "add_trip_plan", "content": content})
     await sync_trip_all()
-    if isinstance(res, dict) and res.get("status") == "ok":
-        await update.message.reply_text(f"🗺️ *已成功將旅遊行程寫入試算表！*\n• 安排：{content}", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"⚠️ 寫入回應: {res}，請確認試算表是否有「旅遊行程」分頁。")
+    await update.message.reply_text(f"🗺️️ *已成功將旅遊行程寫入試算表！*\n• 安排：{content}", parse_mode="Markdown")
 
 async def add_trip_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
@@ -199,7 +193,7 @@ async def add_trip_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     item = " ".join(context.args[:-1])
     amount = context.args[-1]
-    res = await fetch_gas({"action": "add_trip_budget", "item": item, "amount": amount})
+    await fetch_gas({"action": "add_trip_budget", "item": item, "amount": amount})
     await sync_trip_all()
     await update.message.reply_text(f"💰 *旅遊預算項目已建檔！*\n• 項目：*{item}*\n• 預算：`${amount} TWD`（狀態：待購買）", parse_mode="Markdown")
 
@@ -211,7 +205,7 @@ async def add_trip_todo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("格式：`/trip_todo 待辦事項`\n例如：`/trip_todo 購買網卡與換日幣`", parse_mode="Markdown")
         return
     task = " ".join(context.args)
-    res = await fetch_gas({"action": "add_trip_todo", "task": task})
+    await fetch_gas({"action": "add_trip_todo", "task": task})
     await sync_trip_all()
     await update.message.reply_text(f"🎒 *旅遊行前待辦已收錄！*\n• 待辦：{task}", parse_mode="Markdown")
 
@@ -248,7 +242,7 @@ async def add_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 今日行程報備
 async def set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 只有小寶貝本人可以更新行程報備喔！")
+        await update.message.reply_text("⚠️️ 只有小寶貝本人可以更新行程報備喔！")
         return
     if not context.args:
         await update.message.reply_text("請輸入行程內容！例如：\n`/plan 15:00 健身房重訓、18:00 吃火鍋`", parse_mode="Markdown")
@@ -399,7 +393,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         text = f"📍 *行程詳情*\n━━━━━━━━━━━━━━━\n• 安排：*{p['content']}*\n• 建立時間：{p.get('time')}\n━━━━━━━━━━━━━━━"
         keyboard = [
-            [InlineKeyboardButton("🗑️ 刪除此行程", callback_data=f"trip_del_plan_{pid}")],
+            [InlineKeyboardButton("🗑️️ 刪除此行程", callback_data=f"trip_del_plan_{pid}")],
             [InlineKeyboardButton("⬅️ 返回行程清單", callback_data="trip_view_plans")]
         ]
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
@@ -418,7 +412,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sync_trip_all()
         if not local_trip_budgets:
             text = "💰 *【旅遊預算清單】*\n目前尚未編列預算！\n輸入 `/trip_budget 機票 15000` 即可新增！"
-            keyboard = [[InlineKeyboardButton("⬅️️ 返回旅遊選單", callback_data="trip_center")]]
+            keyboard = [[InlineKeyboardButton("⬅️ 返回旅遊選單", callback_data="trip_center")]]
             await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
             return
 
@@ -760,7 +754,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sync_wishes()
         w = next((x for x in local_wishes if int(x["id"]) == w_id), None)
         if not w or "已實現" in str(w.get("status", "")):
-            await safe_edit_text(query, "此願望已實現或不存在！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 回許願池", callback_data="show_wishes")]]))
+            await safe_edit_text(query, "此願望已實現或不存在！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️️ 回許願池", callback_data="show_wishes")]]))
             return
 
         has_photo = "（附照片 📸）" if w.get("photoId") else ""
@@ -890,7 +884,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("approve_"):
         if int(user_id) != int(PATRON_CHAT_ID) and int(user_id) != int(ADMIN_CHAT_ID):
             try:
-                await query.answer("⚠️️ 只有小寶貝本人或專屬金主才能審核核銷喔！💰", show_alert=True)
+                await query.answer("⚠️ 只有小寶貝本人或專屬金主才能審核核銷喔！💰", show_alert=True)
             except Exception:
                 pass
             return
@@ -940,7 +934,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item = b_info.get("item", "款項")
 
         text = (
-            f"⚠️ *請款已被駁回！*\n"
+            f"⚠️️ *請款已被駁回！*\n"
             f"審核人 {approver} 駁回了單號 #{b_id}（{item}）。"
         )
         keyboard = [[InlineKeyboardButton("📋 查看其他請款", callback_data="list_bills")]]
@@ -1128,7 +1122,7 @@ async def run_bot():
         sync_bills(), sync_plan(), sync_wishes(), sync_moods(), sync_todos(), sync_trip_all(), 
         return_exceptions=True
     )
-    print("小寶貝維運機器人運行中 (含深度URL編碼穿透版)...")
+    print("小寶貝維運機器人運行中 (全新專案網址版)...")
 
     stop_event = asyncio.Event()
     await stop_event.wait()
